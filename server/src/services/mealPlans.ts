@@ -1,4 +1,5 @@
 import { prisma } from "../lib/database";
+import { OpenAIService } from "./openai";
 
 export interface MealPlanTemplate {
   template_id: string;
@@ -41,7 +42,7 @@ export interface WeeklyMealPlan {
 export class MealPlanService {
   static async createUserMealPlan(user_id: string, config: UserMealPlanConfig) {
     try {
-      console.log("🍽️ Creating meal plan for user:", user_id);
+      console.log("🍽️ Creating AI-powered meal plan for user:", user_id);
 
       // Get user's questionnaire data for personalization
       const questionnaire = await prisma.userQuestionnaire.findFirst({
@@ -54,6 +55,24 @@ export class MealPlanService {
         where: { user_id },
         orderBy: { created_at: "desc" },
       });
+
+      // Get user's basic info
+      const user = await prisma.user.findUnique({
+        where: { user_id },
+        select: {
+          age: true,
+          weight_kg: true,
+          height_cm: true,
+        },
+      });
+
+      // Generate AI meal plan
+      const aiMealPlan = await this.generateAIMealPlan(
+        config,
+        questionnaire,
+        nutritionPlan,
+        user
+      );
 
       // Create the meal plan
       const mealPlan = await prisma.userMealPlan.create({
@@ -76,147 +95,142 @@ export class MealPlanService {
         },
       });
 
-      // Generate meal schedule based on preferences
-      await this.generateMealSchedule(mealPlan.plan_id, config, questionnaire);
+      // Store AI-generated meal templates and create schedule
+      await this.storeAIMealTemplatesAndSchedule(mealPlan.plan_id, aiMealPlan);
 
-      console.log("✅ Meal plan created successfully");
+      console.log("✅ AI meal plan created successfully");
       return mealPlan;
     } catch (error) {
-      console.error("💥 Error creating meal plan:", error);
+      console.error("💥 Error creating AI meal plan:", error);
       throw new Error("Failed to create meal plan");
     }
   }
 
-  static async generateMealSchedule(
-    plan_id: string,
+  static async generateAIMealPlan(
     config: UserMealPlanConfig,
-    questionnaire: any
+    questionnaire: any,
+    nutritionPlan: any,
+    user: any
   ) {
     try {
-      console.log("📅 Generating meal schedule for plan:", plan_id);
+      console.log("🤖 Generating AI meal plan...");
 
-      // Get suitable meal templates based on dietary preferences
-      const templates = await this.getMealTemplatesForUser(config, questionnaire);
-
-      // Generate schedule for each day of the week
-      for (let day = 0; day < 7; day++) {
-        // Generate main meals
-        const mealTimings = this.getMealTimingsForDay(config.meals_per_day);
-        
-        for (let i = 0; i < mealTimings.length; i++) {
-          const timing = mealTimings[i];
-          const suitableTemplates = templates.filter(t => 
-            t.meal_timing === timing || 
-            (timing === "BREAKFAST" && t.meal_timing === "BREAKFAST") ||
-            (timing === "LUNCH" && t.meal_timing === "LUNCH") ||
-            (timing === "DINNER" && t.meal_timing === "DINNER")
-          );
-
-          if (suitableTemplates.length > 0) {
-            // Rotate templates based on rotation frequency
-            const templateIndex = Math.floor(day / config.rotation_frequency_days) % suitableTemplates.length;
-            const selectedTemplate = suitableTemplates[templateIndex];
-
-            await prisma.mealPlanSchedule.create({
-              data: {
-                plan_id,
-                template_id: selectedTemplate.template_id,
-                day_of_week: day,
-                meal_timing: timing as any,
-                meal_order: i + 1,
-                portion_multiplier: 1.0,
-              },
-            });
-          }
-        }
-
-        // Generate snacks if requested
-        if (config.snacks_per_day > 0) {
-          const snackTemplates = templates.filter(t => 
-            t.meal_timing === "SNACK" || 
-            t.meal_timing === "MORNING_SNACK" || 
-            t.meal_timing === "AFTERNOON_SNACK"
-          );
-
-          for (let s = 0; s < config.snacks_per_day; s++) {
-            if (snackTemplates.length > 0) {
-              const snackIndex = (day + s) % snackTemplates.length;
-              const selectedSnack = snackTemplates[snackIndex];
-              const snackTiming = s === 0 ? "MORNING_SNACK" : "AFTERNOON_SNACK";
-
-              await prisma.mealPlanSchedule.create({
-                data: {
-                  plan_id,
-                  template_id: selectedSnack.template_id,
-                  day_of_week: day,
-                  meal_timing: snackTiming as any,
-                  meal_order: s + 1,
-                  portion_multiplier: 0.5, // Smaller portions for snacks
-                  is_optional: true,
-                },
-              });
-            }
-          }
-        }
-      }
-
-      console.log("✅ Meal schedule generated successfully");
+      // Build user profile for AI
+      const userProfile = this.buildUserProfile(config, questionnaire, nutritionPlan, user);
+      
+      // Generate meal plan using OpenAI
+      const aiResponse = await OpenAIService.generateMealPlan(userProfile);
+      
+      console.log("✅ AI meal plan generated successfully");
+      return aiResponse;
     } catch (error) {
-      console.error("💥 Error generating meal schedule:", error);
+      console.error("💥 Error generating AI meal plan:", error);
       throw error;
     }
   }
 
-  static async getMealTemplatesForUser(config: UserMealPlanConfig, questionnaire: any) {
+  static buildUserProfile(config: UserMealPlanConfig, questionnaire: any, nutritionPlan: any, user: any) {
+    return {
+      // Basic info
+      age: user?.age || 30,
+      weight_kg: user?.weight_kg || 70,
+      height_cm: user?.height_cm || 170,
+      
+      // Nutrition goals
+      target_calories_daily: nutritionPlan?.goal_calories || 2000,
+      target_protein_daily: nutritionPlan?.goal_protein_g || 150,
+      target_carbs_daily: nutritionPlan?.goal_carbs_g || 250,
+      target_fats_daily: nutritionPlan?.goal_fats_g || 67,
+      
+      // Meal structure preferences
+      meals_per_day: config.meals_per_day,
+      snacks_per_day: config.snacks_per_day,
+      rotation_frequency_days: config.rotation_frequency_days,
+      include_leftovers: config.include_leftovers,
+      fixed_meal_times: config.fixed_meal_times,
+      
+      // Dietary preferences and restrictions
+      dietary_preferences: config.dietary_preferences,
+      excluded_ingredients: config.excluded_ingredients,
+      allergies: questionnaire?.allergies || [],
+      
+      // Lifestyle factors
+      physical_activity_level: questionnaire?.physical_activity_level || "MODERATE",
+      sport_frequency: questionnaire?.sport_frequency || "TWO_TO_THREE",
+      main_goal: questionnaire?.main_goal || "GENERAL_HEALTH",
+      
+      // Food preferences from questionnaire
+      dietary_preferences_questionnaire: questionnaire?.dietary_preferences || [],
+      avoided_foods: questionnaire?.avoided_foods || [],
+      meal_texture_preference: questionnaire?.meal_texture_preference,
+      
+      // Cooking preferences
+      cooking_skill_level: "intermediate", // Could be derived from questionnaire
+      available_cooking_time: this.getCookingTimeFromMealCount(config.meals_per_day),
+      kitchen_equipment: ["oven", "stovetop", "microwave"], // Could be from questionnaire
+    };
+  }
+
+  static async storeAIMealTemplatesAndSchedule(plan_id: string, aiMealPlan: any) {
     try {
-      // Determine dietary categories based on preferences
-      const dietaryCategories = this.getDietaryCategoriesFromPreferences(
-        config.dietary_preferences,
-        questionnaire
-      );
+      console.log("💾 Storing AI-generated meal templates and schedule...");
 
-      // Get templates that match user preferences
-      const templates = await prisma.mealTemplate.findMany({
-        where: {
-          is_active: true,
-          dietary_category: {
-            in: dietaryCategories,
-          },
-          // Exclude templates with excluded ingredients
-          NOT: config.excluded_ingredients.length > 0 ? {
-            ingredients_json: {
-              path: [],
-              array_contains: config.excluded_ingredients,
+      const templateIds: Record<string, string> = {};
+
+      // Store each unique meal template
+      for (const dayPlan of aiMealPlan.weekly_plan) {
+        for (const meal of dayPlan.meals) {
+          if (!templateIds[meal.name]) {
+            const template = await prisma.mealTemplate.create({
+              data: {
+                name: meal.name,
+                description: meal.description,
+                meal_timing: meal.meal_timing as any,
+                dietary_category: meal.dietary_category as any,
+                prep_time_minutes: meal.prep_time_minutes,
+                difficulty_level: meal.difficulty_level,
+                calories: meal.calories,
+                protein_g: meal.protein_g,
+                carbs_g: meal.carbs_g,
+                fats_g: meal.fats_g,
+                fiber_g: meal.fiber_g,
+                sugar_g: meal.sugar_g,
+                sodium_mg: meal.sodium_mg,
+                ingredients_json: meal.ingredients,
+                instructions_json: meal.instructions,
+                allergens_json: meal.allergens,
+                image_url: meal.image_url,
+              },
+            });
+            templateIds[meal.name] = template.template_id;
+          }
+        }
+      }
+
+      // Create meal schedule
+      for (let dayIndex = 0; dayIndex < aiMealPlan.weekly_plan.length; dayIndex++) {
+        const dayPlan = aiMealPlan.weekly_plan[dayIndex];
+        
+        for (let mealIndex = 0; mealIndex < dayPlan.meals.length; mealIndex++) {
+          const meal = dayPlan.meals[mealIndex];
+          
+          await prisma.mealPlanSchedule.create({
+            data: {
+              plan_id,
+              template_id: templateIds[meal.name],
+              day_of_week: dayIndex,
+              meal_timing: meal.meal_timing as any,
+              meal_order: mealIndex + 1,
+              portion_multiplier: meal.portion_multiplier || 1.0,
+              is_optional: meal.is_optional || false,
             },
-          } : undefined,
-        },
-        orderBy: {
-          created_at: "desc",
-        },
-      });
+          });
+        }
+      }
 
-      return templates.map(template => ({
-        template_id: template.template_id,
-        name: template.name,
-        description: template.description,
-        meal_timing: template.meal_timing,
-        dietary_category: template.dietary_category,
-        prep_time_minutes: template.prep_time_minutes,
-        difficulty_level: template.difficulty_level,
-        calories: template.calories,
-        protein_g: template.protein_g,
-        carbs_g: template.carbs_g,
-        fats_g: template.fats_g,
-        fiber_g: template.fiber_g,
-        sugar_g: template.sugar_g,
-        sodium_mg: template.sodium_mg,
-        ingredients: template.ingredients_json as any[] || [],
-        instructions: template.instructions_json as any[] || [],
-        allergens: template.allergens_json as string[] || [],
-        image_url: template.image_url,
-      }));
+      console.log("✅ AI meal templates and schedule stored successfully");
     } catch (error) {
-      console.error("💥 Error getting meal templates:", error);
+      console.error("💥 Error storing AI meal templates:", error);
       throw error;
     }
   }
@@ -303,19 +317,91 @@ export class MealPlanService {
     day_of_week: number,
     meal_timing: string,
     meal_order: number,
-    new_template_id: string
+    preferences?: { dietary_category?: string; max_prep_time?: number }
   ) {
     try {
-      console.log("🔄 Replacing meal in plan:", { plan_id, day_of_week, meal_timing, meal_order });
+      console.log("🔄 AI-powered meal replacement in plan:", { plan_id, day_of_week, meal_timing, meal_order });
 
       // Verify the plan belongs to the user
       const mealPlan = await prisma.userMealPlan.findFirst({
         where: { plan_id, user_id },
+        include: {
+          schedules: {
+            where: {
+              day_of_week,
+              meal_timing: meal_timing as any,
+              meal_order,
+            },
+            include: {
+              template: true,
+            },
+          },
+        },
       });
 
-      if (!mealPlan) {
-        throw new Error("Meal plan not found");
+      if (!mealPlan || !mealPlan.schedules[0]) {
+        throw new Error("Meal not found in plan");
       }
+
+      const currentMeal = mealPlan.schedules[0].template;
+
+      // Get user profile for AI replacement
+      const questionnaire = await prisma.userQuestionnaire.findFirst({
+        where: { user_id },
+        orderBy: { date_completed: "desc" },
+      });
+
+      const user = await prisma.user.findUnique({
+        where: { user_id },
+        select: { age: true, weight_kg: true, height_cm: true },
+      });
+
+      // Generate AI replacement meal
+      const replacementMeal = await OpenAIService.generateReplacementMeal({
+        current_meal: {
+          name: currentMeal.name,
+          meal_timing: currentMeal.meal_timing,
+          dietary_category: currentMeal.dietary_category,
+          calories: currentMeal.calories,
+          protein_g: currentMeal.protein_g,
+          carbs_g: currentMeal.carbs_g,
+          fats_g: currentMeal.fats_g,
+        },
+        user_preferences: {
+          dietary_preferences: mealPlan.dietary_preferences as string[] || [],
+          excluded_ingredients: mealPlan.excluded_ingredients as string[] || [],
+          allergies: questionnaire?.allergies || [],
+          preferred_dietary_category: preferences?.dietary_category,
+          max_prep_time: preferences?.max_prep_time,
+        },
+        nutrition_targets: {
+          target_calories: mealPlan.target_calories_daily || 2000,
+          target_protein: mealPlan.target_protein_daily || 150,
+        },
+      });
+
+      // Create new template for replacement meal
+      const newTemplate = await prisma.mealTemplate.create({
+        data: {
+          name: replacementMeal.name,
+          description: replacementMeal.description,
+          meal_timing: replacementMeal.meal_timing as any,
+          dietary_category: replacementMeal.dietary_category as any,
+          prep_time_minutes: replacementMeal.prep_time_minutes,
+          difficulty_level: replacementMeal.difficulty_level,
+          calories: replacementMeal.calories,
+          protein_g: replacementMeal.protein_g,
+          carbs_g: replacementMeal.carbs_g,
+          fats_g: replacementMeal.fats_g,
+          fiber_g: replacementMeal.fiber_g,
+          sugar_g: replacementMeal.sugar_g,
+          sodium_mg: replacementMeal.sodium_mg,
+          ingredients_json: replacementMeal.ingredients,
+          instructions_json: replacementMeal.instructions,
+          allergens_json: replacementMeal.allergens,
+          image_url: replacementMeal.image_url,
+        },
+      });
 
       // Update the schedule
       await prisma.mealPlanSchedule.updateMany({
@@ -326,14 +412,14 @@ export class MealPlanService {
           meal_order,
         },
         data: {
-          template_id: new_template_id,
+          template_id: newTemplate.template_id,
         },
       });
 
-      console.log("✅ Meal replaced successfully");
-      return { success: true };
+      console.log("✅ AI meal replacement completed successfully");
+      return { success: true, new_meal: newTemplate };
     } catch (error) {
-      console.error("💥 Error replacing meal:", error);
+      console.error("💥 Error replacing meal with AI:", error);
       throw error;
     }
   }
@@ -460,56 +546,10 @@ export class MealPlanService {
 
   // Helper methods
 
-  private static getMealTimingsForDay(meals_per_day: number): string[] {
-    switch (meals_per_day) {
-      case 2:
-        return ["BREAKFAST", "DINNER"];
-      case 3:
-        return ["BREAKFAST", "LUNCH", "DINNER"];
-      case 4:
-        return ["BREAKFAST", "LUNCH", "SNACK", "DINNER"];
-      case 5:
-        return ["BREAKFAST", "MORNING_SNACK", "LUNCH", "AFTERNOON_SNACK", "DINNER"];
-      default:
-        return ["BREAKFAST", "LUNCH", "DINNER"];
-    }
-  }
-
-  private static getDietaryCategoriesFromPreferences(
-    preferences: string[],
-    questionnaire: any
-  ): string[] {
-    const categories = ["BALANCED"]; // Default category
-
-    if (preferences.includes("vegetarian") || questionnaire?.dietary_preferences?.includes("vegetarian")) {
-      categories.push("VEGETARIAN");
-    }
-    if (preferences.includes("vegan") || questionnaire?.dietary_preferences?.includes("vegan")) {
-      categories.push("VEGAN");
-    }
-    if (preferences.includes("keto") || questionnaire?.dietary_preferences?.includes("keto")) {
-      categories.push("KETO");
-    }
-    if (preferences.includes("paleo") || questionnaire?.dietary_preferences?.includes("paleo")) {
-      categories.push("PALEO");
-    }
-    if (preferences.includes("mediterranean")) {
-      categories.push("MEDITERRANEAN");
-    }
-    if (preferences.includes("low_carb")) {
-      categories.push("LOW_CARB");
-    }
-    if (preferences.includes("high_protein")) {
-      categories.push("HIGH_PROTEIN");
-    }
-    if (preferences.includes("gluten_free") || questionnaire?.allergies?.includes("gluten")) {
-      categories.push("GLUTEN_FREE");
-    }
-    if (preferences.includes("dairy_free") || questionnaire?.allergies?.includes("dairy")) {
-      categories.push("DAIRY_FREE");
-    }
-
-    return categories;
+  private static getCookingTimeFromMealCount(meals_per_day: number): string {
+    if (meals_per_day <= 2) return "minimal"; // 15-30 min total
+    if (meals_per_day === 3) return "moderate"; // 30-60 min total
+    return "extensive"; // 60+ min total
   }
 
   private static estimateIngredientCost(name: string, quantity: number, unit: string): number {
@@ -519,6 +559,7 @@ export class MealPlanService {
       "chicken": 3.0,
       "beef": 5.0,
       "fish": 4.0,
+      "salmon": 6.0,
       "eggs": 0.5,
       "tofu": 2.0,
       
@@ -528,12 +569,21 @@ export class MealPlanService {
       "carrot": 0.6,
       "broccoli": 1.2,
       "spinach": 1.5,
+      "avocado": 2.0,
+      "sweet potato": 0.7,
       
       // Grains (per 100g)
       "rice": 0.3,
+      "quinoa": 1.2,
       "pasta": 0.4,
       "bread": 0.8,
       "oats": 0.5,
+      
+      // Dairy (per 100g/ml)
+      "milk": 0.1,
+      "yogurt": 0.8,
+      "cheese": 2.5,
+      "feta": 3.0,
       
       // Default
       "default": 1.0,

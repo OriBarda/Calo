@@ -24,7 +24,10 @@ const replaceMealSchema = z.object({
   day_of_week: z.number().min(0).max(6),
   meal_timing: z.string(),
   meal_order: z.number().min(1),
-  new_template_id: z.string(),
+  preferences: z.object({
+    dietary_category: z.string().optional(),
+    max_prep_time: z.number().optional(),
+  }).optional(),
 });
 
 const mealPreferenceSchema = z.object({
@@ -34,12 +37,64 @@ const mealPreferenceSchema = z.object({
   notes: z.string().optional(),
 });
 
-// Create a new meal plan
+// Create a new AI-powered meal plan
 router.post("/create", async (req: AuthRequest, res) => {
   try {
     const validatedData = createMealPlanSchema.parse(req.body);
     
-    console.log("🍽️ Create meal plan request for user:", req.user.user_id);
+    console.log("🍽️ Create AI meal plan request for user:", req.user.user_id);
+
+    // Check user's AI request limits
+    const user = await req.app.locals.prisma?.user.findUnique({
+      where: { user_id: req.user.user_id },
+      select: {
+        aiRequestsCount: true,
+        aiRequestsResetAt: true,
+        subscription_type: true,
+      },
+    });
+
+    if (user) {
+      // Check if we need to reset daily limits
+      const now = new Date();
+      const resetTime = new Date(user.aiRequestsResetAt);
+      const hoursSinceReset = (now.getTime() - resetTime.getTime()) / (1000 * 60 * 60);
+
+      if (hoursSinceReset >= 24) {
+        await req.app.locals.prisma?.user.update({
+          where: { user_id: req.user.user_id },
+          data: {
+            aiRequestsCount: 0,
+            aiRequestsResetAt: now,
+          },
+        });
+        user.aiRequestsCount = 0;
+      }
+
+      // Check limits based on subscription
+      const limits = {
+        FREE: 2, // 2 meal plans per day for free users
+        BASIC: 5,
+        PREMIUM: 20,
+      };
+
+      const userLimit = limits[user.subscription_type as keyof typeof limits] || limits.FREE;
+
+      if (user.aiRequestsCount >= userLimit) {
+        return res.status(429).json({
+          success: false,
+          error: `Daily AI meal plan limit reached (${userLimit}). Upgrade your subscription for more meal plans.`,
+        });
+      }
+
+      // Increment AI request count
+      await req.app.locals.prisma?.user.update({
+        where: { user_id: req.user.user_id },
+        data: {
+          aiRequestsCount: user.aiRequestsCount + 1,
+        },
+      });
+    }
 
     const mealPlan = await MealPlanService.createUserMealPlan(
       req.user.user_id,
@@ -49,9 +104,10 @@ router.post("/create", async (req: AuthRequest, res) => {
     res.json({
       success: true,
       data: mealPlan,
+      message: "AI-powered meal plan created successfully!",
     });
   } catch (error) {
-    console.error("💥 Create meal plan error:", error);
+    console.error("💥 Create AI meal plan error:", error);
     const message = error instanceof Error ? error.message : "Failed to create meal plan";
     res.status(500).json({
       success: false,
@@ -104,29 +160,30 @@ router.get("/:planId", async (req: AuthRequest, res) => {
   }
 });
 
-// Replace a meal in the plan
+// Replace a meal in the plan with AI-generated alternative
 router.put("/:planId/replace", async (req: AuthRequest, res) => {
   try {
     const { planId } = req.params;
     const validatedData = replaceMealSchema.parse(req.body);
     
-    console.log("🔄 Replace meal request for plan:", planId);
+    console.log("🔄 AI meal replacement request for plan:", planId);
 
-    await MealPlanService.replaceMealInPlan(
+    const result = await MealPlanService.replaceMealInPlan(
       req.user.user_id,
       planId,
       validatedData.day_of_week,
       validatedData.meal_timing,
       validatedData.meal_order,
-      validatedData.new_template_id
+      validatedData.preferences
     );
 
     res.json({
       success: true,
-      message: "Meal replaced successfully",
+      data: result,
+      message: "Meal replaced with AI-generated alternative!",
     });
   } catch (error) {
-    console.error("💥 Replace meal error:", error);
+    console.error("💥 AI meal replacement error:", error);
     const message = error instanceof Error ? error.message : "Failed to replace meal";
     res.status(500).json({
       success: false,
@@ -170,7 +227,7 @@ router.post("/:planId/shopping-list", async (req: AuthRequest, res) => {
   }
 });
 
-// Save meal preference
+// Save meal preference (affects future AI recommendations)
 router.post("/preferences", async (req: AuthRequest, res) => {
   try {
     const validatedData = mealPreferenceSchema.parse(req.body);
@@ -188,6 +245,7 @@ router.post("/preferences", async (req: AuthRequest, res) => {
     res.json({
       success: true,
       data: preference,
+      message: "Preference saved! This will improve future AI recommendations.",
     });
   } catch (error) {
     console.error("💥 Save meal preference error:", error);

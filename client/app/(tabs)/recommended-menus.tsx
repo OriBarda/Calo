@@ -14,6 +14,8 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { useDispatch, useSelector } from "react-redux";
 import { RootState, AppDispatch } from "../../src/store";
+import axios from "axios";
+import { Platform } from "react-native";
 
 interface MealTemplate {
   template_id: string;
@@ -53,19 +55,31 @@ interface MealPlanConfig {
   excluded_ingredients: string[];
 }
 
+// Get the correct API URL based on platform
+const getApiBaseUrl = () => {
+  if (Platform.OS === "web") {
+    return "http://localhost:5000/api";
+  } else {
+    return "http://192.168.1.70:5000/api";
+  }
+};
+
 export default function RecommendedMenusScreen() {
   const dispatch = useDispatch<AppDispatch>();
   const { user } = useSelector((state: RootState) => state.auth);
 
   const [weeklyPlan, setWeeklyPlan] = useState<WeeklyMealPlan>({});
   const [isLoading, setIsLoading] = useState(true);
+  const [isCreatingPlan, setIsCreatingPlan] = useState(false);
+  const [isReplacingMeal, setIsReplacingMeal] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [showMealModal, setShowMealModal] = useState(false);
   const [selectedMeal, setSelectedMeal] = useState<MealTemplate | null>(null);
   const [currentDay, setCurrentDay] = useState("Monday");
+  const [activePlanId, setActivePlanId] = useState<string | null>(null);
   const [mealPlanConfig, setMealPlanConfig] = useState<MealPlanConfig>({
-    name: "My Weekly Plan",
+    name: "My AI Meal Plan",
     meals_per_day: 3,
     snacks_per_day: 0,
     rotation_frequency_days: 7,
@@ -82,19 +96,76 @@ export default function RecommendedMenusScreen() {
     loadMealPlan();
   }, []);
 
+  const getAuthHeaders = async () => {
+    try {
+      if (Platform.OS === "web") {
+        return {}; // Cookies handled automatically
+      } else {
+        const { authAPI } = await import("../../src/services/api");
+        const token = await authAPI.getStoredToken();
+        return token ? { Authorization: `Bearer ${token}` } : {};
+      }
+    } catch (error) {
+      console.error("Error getting auth headers:", error);
+      return {};
+    }
+  };
+
   const loadMealPlan = async () => {
     try {
       setIsLoading(true);
       
-      // In a real implementation, you'd call your API here
-      // For now, we'll create a mock meal plan
-      const mockPlan = createMockMealPlan();
-      setWeeklyPlan(mockPlan);
-    } catch (error) {
+      const headers = await getAuthHeaders();
+      const response = await axios.get(`${getApiBaseUrl()}/meal-plans/current`, {
+        headers,
+        withCredentials: Platform.OS === "web",
+      });
+
+      if (response.data.success) {
+        setWeeklyPlan(response.data.data);
+      }
+    } catch (error: any) {
       console.error("💥 Error loading meal plan:", error);
-      Alert.alert("Error", "Failed to load meal plan");
+      if (error.response?.status === 404 || error.response?.data?.error?.includes("No active meal plan")) {
+        // No meal plan exists yet - this is normal for new users
+        setWeeklyPlan({});
+      } else {
+        Alert.alert("Error", "Failed to load meal plan");
+      }
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const createAIMealPlan = async () => {
+    try {
+      setIsCreatingPlan(true);
+      
+      const headers = await getAuthHeaders();
+      const response = await axios.post(
+        `${getApiBaseUrl()}/meal-plans/create`,
+        mealPlanConfig,
+        {
+          headers,
+          withCredentials: Platform.OS === "web",
+        }
+      );
+
+      if (response.data.success) {
+        setActivePlanId(response.data.data.plan_id);
+        Alert.alert(
+          "Success!", 
+          "Your AI-powered meal plan has been created! 🎉",
+          [{ text: "OK", onPress: () => loadMealPlan() }]
+        );
+        setShowConfigModal(false);
+      }
+    } catch (error: any) {
+      console.error("💥 Error creating AI meal plan:", error);
+      const errorMessage = error.response?.data?.error || "Failed to create meal plan";
+      Alert.alert("Error", errorMessage);
+    } finally {
+      setIsCreatingPlan(false);
     }
   };
 
@@ -104,190 +175,110 @@ export default function RecommendedMenusScreen() {
     setRefreshing(false);
   };
 
-  const createMockMealPlan = (): WeeklyMealPlan => {
-    const mockMeals: Record<string, MealTemplate[]> = {
-      BREAKFAST: [
-        {
-          template_id: "1",
-          name: "Avocado Toast with Eggs",
-          description: "Whole grain toast topped with mashed avocado and poached eggs",
-          meal_timing: "BREAKFAST",
-          dietary_category: "BALANCED",
-          prep_time_minutes: 15,
-          difficulty_level: 2,
-          calories: 420,
-          protein_g: 18,
-          carbs_g: 32,
-          fats_g: 24,
-          fiber_g: 12,
-          sugar_g: 3,
-          sodium_mg: 380,
-          ingredients: [
-            { name: "Whole grain bread", quantity: 2, unit: "slices" },
-            { name: "Avocado", quantity: 1, unit: "medium" },
-            { name: "Eggs", quantity: 2, unit: "large" },
-            { name: "Lemon juice", quantity: 1, unit: "tsp" },
-            { name: "Salt", quantity: 0.5, unit: "tsp" },
-            { name: "Black pepper", quantity: 0.25, unit: "tsp" },
-          ],
-          instructions: [
-            { step: 1, text: "Toast the bread slices until golden brown" },
-            { step: 2, text: "Mash avocado with lemon juice, salt, and pepper" },
-            { step: 3, text: "Poach eggs in simmering water for 3-4 minutes" },
-            { step: 4, text: "Spread avocado on toast and top with poached eggs" },
-          ],
-          allergens: ["gluten", "eggs"],
-          image_url: "https://images.pexels.com/photos/1351238/pexels-photo-1351238.jpeg",
-        },
-        {
-          template_id: "2",
-          name: "Greek Yogurt Parfait",
-          description: "Layered Greek yogurt with berries and granola",
-          meal_timing: "BREAKFAST",
-          dietary_category: "HIGH_PROTEIN",
-          prep_time_minutes: 5,
-          difficulty_level: 1,
-          calories: 320,
-          protein_g: 20,
-          carbs_g: 35,
-          fats_g: 8,
-          fiber_g: 6,
-          sugar_g: 18,
-          sodium_mg: 120,
-          ingredients: [
-            { name: "Greek yogurt", quantity: 200, unit: "g" },
-            { name: "Mixed berries", quantity: 100, unit: "g" },
-            { name: "Granola", quantity: 30, unit: "g" },
-            { name: "Honey", quantity: 1, unit: "tbsp" },
-          ],
-          instructions: [
-            { step: 1, text: "Layer yogurt, berries, and granola in a glass" },
-            { step: 2, text: "Drizzle with honey" },
-            { step: 3, text: "Repeat layers and serve immediately" },
-          ],
-          allergens: ["dairy"],
-          image_url: "https://images.pexels.com/photos/1092730/pexels-photo-1092730.jpeg",
-        },
-      ],
-      LUNCH: [
-        {
-          template_id: "3",
-          name: "Mediterranean Quinoa Bowl",
-          description: "Quinoa bowl with vegetables, feta, and tahini dressing",
-          meal_timing: "LUNCH",
-          dietary_category: "MEDITERRANEAN",
-          prep_time_minutes: 25,
-          difficulty_level: 2,
-          calories: 480,
-          protein_g: 16,
-          carbs_g: 58,
-          fats_g: 18,
-          fiber_g: 8,
-          sugar_g: 12,
-          sodium_mg: 420,
-          ingredients: [
-            { name: "Quinoa", quantity: 80, unit: "g" },
-            { name: "Cherry tomatoes", quantity: 150, unit: "g" },
-            { name: "Cucumber", quantity: 100, unit: "g" },
-            { name: "Red onion", quantity: 50, unit: "g" },
-            { name: "Feta cheese", quantity: 50, unit: "g" },
-            { name: "Olive oil", quantity: 2, unit: "tbsp" },
-            { name: "Lemon juice", quantity: 1, unit: "tbsp" },
-          ],
-          instructions: [
-            { step: 1, text: "Cook quinoa according to package instructions" },
-            { step: 2, text: "Chop vegetables and mix with olive oil and lemon" },
-            { step: 3, text: "Combine quinoa with vegetables" },
-            { step: 4, text: "Top with crumbled feta cheese" },
-          ],
-          allergens: ["dairy"],
-          image_url: "https://images.pexels.com/photos/1640777/pexels-photo-1640777.jpeg",
-        },
-      ],
-      DINNER: [
-        {
-          template_id: "4",
-          name: "Grilled Salmon with Vegetables",
-          description: "Herb-crusted salmon with roasted seasonal vegetables",
-          meal_timing: "DINNER",
-          dietary_category: "HIGH_PROTEIN",
-          prep_time_minutes: 30,
-          difficulty_level: 3,
-          calories: 520,
-          protein_g: 35,
-          carbs_g: 25,
-          fats_g: 28,
-          fiber_g: 8,
-          sugar_g: 12,
-          sodium_mg: 380,
-          ingredients: [
-            { name: "Salmon fillet", quantity: 150, unit: "g" },
-            { name: "Broccoli", quantity: 200, unit: "g" },
-            { name: "Sweet potato", quantity: 150, unit: "g" },
-            { name: "Olive oil", quantity: 2, unit: "tbsp" },
-            { name: "Herbs (dill, parsley)", quantity: 2, unit: "tbsp" },
-            { name: "Lemon", quantity: 0.5, unit: "piece" },
-          ],
-          instructions: [
-            { step: 1, text: "Preheat oven to 200°C" },
-            { step: 2, text: "Season salmon with herbs and lemon" },
-            { step: 3, text: "Roast vegetables with olive oil for 20 minutes" },
-            { step: 4, text: "Grill salmon for 4-5 minutes per side" },
-            { step: 5, text: "Serve salmon with roasted vegetables" },
-          ],
-          allergens: ["fish"],
-          image_url: "https://images.pexels.com/photos/725991/pexels-photo-725991.jpeg",
-        },
-      ],
-    };
-
-    const plan: WeeklyMealPlan = {};
-    dayNames.forEach(day => {
-      plan[day] = {
-        BREAKFAST: [mockMeals.BREAKFAST[Math.floor(Math.random() * mockMeals.BREAKFAST.length)]],
-        LUNCH: [mockMeals.LUNCH[0]],
-        DINNER: [mockMeals.DINNER[0]],
-      };
-    });
-
-    return plan;
-  };
-
   const handleMealPress = (meal: MealTemplate) => {
     setSelectedMeal(meal);
     setShowMealModal(true);
   };
 
-  const handleReplaceMeal = () => {
-    Alert.alert(
-      "Replace Meal",
-      "Would you like to replace this meal with a similar alternative?",
-      [
-        { text: "Cancel", style: "cancel" },
-        { text: "Replace", onPress: () => {
-          // In a real implementation, you'd call the replace meal API
-          Alert.alert("Success", "Meal replaced successfully!");
-          setShowMealModal(false);
-        }},
-      ]
-    );
+  const handleReplaceMeal = async () => {
+    if (!selectedMeal || !activePlanId) {
+      Alert.alert("Error", "Unable to replace meal at this time");
+      return;
+    }
+
+    try {
+      setIsReplacingMeal(true);
+      
+      // Find the day and timing for this meal
+      const dayIndex = dayNames.indexOf(currentDay);
+      
+      const headers = await getAuthHeaders();
+      const response = await axios.put(
+        `${getApiBaseUrl()}/meal-plans/${activePlanId}/replace`,
+        {
+          day_of_week: dayIndex,
+          meal_timing: selectedMeal.meal_timing,
+          meal_order: 1,
+          preferences: {
+            dietary_category: selectedMeal.dietary_category,
+            max_prep_time: 45,
+          },
+        },
+        {
+          headers,
+          withCredentials: Platform.OS === "web",
+        }
+      );
+
+      if (response.data.success) {
+        Alert.alert("Success!", "Meal replaced with AI-generated alternative! 🔄");
+        setShowMealModal(false);
+        await loadMealPlan();
+      }
+    } catch (error: any) {
+      console.error("💥 Error replacing meal:", error);
+      Alert.alert("Error", "Failed to replace meal");
+    } finally {
+      setIsReplacingMeal(false);
+    }
   };
 
-  const handleMarkFavorite = () => {
-    Alert.alert("Success", "Meal marked as favorite!");
+  const handleMarkFavorite = async () => {
+    if (!selectedMeal) return;
+
+    try {
+      const headers = await getAuthHeaders();
+      await axios.post(
+        `${getApiBaseUrl()}/meal-plans/preferences`,
+        {
+          template_id: selectedMeal.template_id,
+          preference_type: "favorite",
+          rating: 5,
+        },
+        {
+          headers,
+          withCredentials: Platform.OS === "web",
+        }
+      );
+
+      Alert.alert("Success!", "Meal marked as favorite! This will improve future AI recommendations. ❤️");
+    } catch (error) {
+      console.error("💥 Error marking favorite:", error);
+      Alert.alert("Error", "Failed to mark as favorite");
+    }
   };
 
-  const generateShoppingList = () => {
-    Alert.alert(
-      "Shopping List",
-      "Generate shopping list for this week?",
-      [
-        { text: "Cancel", style: "cancel" },
-        { text: "Generate", onPress: () => {
-          Alert.alert("Success", "Shopping list generated! Check your email for the PDF.");
-        }},
-      ]
-    );
+  const generateShoppingList = async () => {
+    if (!activePlanId) {
+      Alert.alert("Error", "No active meal plan found");
+      return;
+    }
+
+    try {
+      const today = new Date();
+      const startOfWeek = new Date(today.setDate(today.getDate() - today.getDay()));
+      const weekStartDate = startOfWeek.toISOString().split('T')[0];
+
+      const headers = await getAuthHeaders();
+      const response = await axios.post(
+        `${getApiBaseUrl()}/meal-plans/${activePlanId}/shopping-list`,
+        { week_start_date: weekStartDate },
+        {
+          headers,
+          withCredentials: Platform.OS === "web",
+        }
+      );
+
+      if (response.data.success) {
+        Alert.alert(
+          "Shopping List Generated! 🛒",
+          `Your shopping list has been created with ${Object.keys(response.data.data.items_json).length} categories. Estimated cost: $${response.data.data.total_estimated_cost?.toFixed(2) || '0.00'}`
+        );
+      }
+    } catch (error) {
+      console.error("💥 Error generating shopping list:", error);
+      Alert.alert("Error", "Failed to generate shopping list");
+    }
   };
 
   const renderMealCard = (meal: MealTemplate, day: string, timing: string) => {
@@ -307,6 +298,9 @@ export default function RecommendedMenusScreen() {
         case "KETO": return "#9C27B0";
         case "HIGH_PROTEIN": return "#FF5722";
         case "MEDITERRANEAN": return "#2196F3";
+        case "LOW_CARB": return "#795548";
+        case "GLUTEN_FREE": return "#FFC107";
+        case "DAIRY_FREE": return "#E91E63";
         default: return "#607D8B";
       }
     };
@@ -354,9 +348,17 @@ export default function RecommendedMenusScreen() {
           </View>
 
           <View style={styles.mealActions}>
-            <TouchableOpacity style={styles.actionButton} onPress={handleReplaceMeal}>
-              <Ionicons name="refresh-outline" size={18} color="#007AFF" />
-              <Text style={styles.actionText}>Replace</Text>
+            <TouchableOpacity 
+              style={styles.actionButton} 
+              onPress={handleReplaceMeal}
+              disabled={isReplacingMeal}
+            >
+              {isReplacingMeal ? (
+                <ActivityIndicator size="small" color="#007AFF" />
+              ) : (
+                <Ionicons name="refresh-outline" size={18} color="#007AFF" />
+              )}
+              <Text style={styles.actionText}>AI Replace</Text>
             </TouchableOpacity>
             
             <TouchableOpacity style={styles.actionButton} onPress={handleMarkFavorite}>
@@ -403,7 +405,7 @@ export default function RecommendedMenusScreen() {
     return (
       <View style={styles.centered}>
         <ActivityIndicator size="large" color="#007AFF" />
-        <Text style={styles.loadingText}>Loading your meal plan...</Text>
+        <Text style={styles.loadingText}>Loading your AI meal plan...</Text>
       </View>
     );
   }
@@ -412,7 +414,7 @@ export default function RecommendedMenusScreen() {
     <View style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>My Recommended Menus</Text>
+        <Text style={styles.headerTitle}>AI Recommended Menus</Text>
         <View style={styles.headerActions}>
           <TouchableOpacity style={styles.headerButton} onPress={() => setShowConfigModal(true)}>
             <Ionicons name="settings-outline" size={24} color="#007AFF" />
@@ -446,12 +448,12 @@ export default function RecommendedMenusScreen() {
         {Object.keys(weeklyPlan).length === 0 ? (
           <View style={styles.emptyState}>
             <Ionicons name="restaurant-outline" size={64} color="#ccc" />
-            <Text style={styles.emptyTitle}>No Meal Plan Yet</Text>
+            <Text style={styles.emptyTitle}>No AI Meal Plan Yet</Text>
             <Text style={styles.emptyText}>
-              Create your personalized meal plan to get started with healthy eating!
+              Create your personalized AI-powered meal plan based on your preferences, goals, and dietary restrictions!
             </Text>
             <TouchableOpacity style={styles.createButton} onPress={() => setShowConfigModal(true)}>
-              <Text style={styles.createButtonText}>Create Meal Plan</Text>
+              <Text style={styles.createButtonText}>Create AI Meal Plan</Text>
             </TouchableOpacity>
           </View>
         ) : (
@@ -540,9 +542,17 @@ export default function RecommendedMenusScreen() {
                 </ScrollView>
 
                 <View style={styles.modalActions}>
-                  <TouchableOpacity style={styles.modalActionButton} onPress={handleReplaceMeal}>
-                    <Ionicons name="refresh-outline" size={20} color="#007AFF" />
-                    <Text style={styles.modalActionText}>Replace</Text>
+                  <TouchableOpacity 
+                    style={styles.modalActionButton} 
+                    onPress={handleReplaceMeal}
+                    disabled={isReplacingMeal}
+                  >
+                    {isReplacingMeal ? (
+                      <ActivityIndicator size="small" color="#007AFF" />
+                    ) : (
+                      <Ionicons name="refresh-outline" size={20} color="#007AFF" />
+                    )}
+                    <Text style={styles.modalActionText}>AI Replace</Text>
                   </TouchableOpacity>
                   
                   <TouchableOpacity style={styles.modalActionButton} onPress={handleMarkFavorite}>
@@ -566,13 +576,18 @@ export default function RecommendedMenusScreen() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Meal Plan Settings</Text>
+              <Text style={styles.modalTitle}>AI Meal Plan Settings</Text>
               <TouchableOpacity onPress={() => setShowConfigModal(false)}>
                 <Ionicons name="close" size={24} color="#666" />
               </TouchableOpacity>
             </View>
 
             <ScrollView style={styles.modalBody}>
+              <Text style={styles.configSectionTitle}>🤖 AI will create your personalized meal plan</Text>
+              <Text style={styles.configDescription}>
+                Based on your profile, preferences, and goals, our AI will generate a complete weekly meal plan with recipes, nutrition info, and shopping lists.
+              </Text>
+              
               <Text style={styles.configSectionTitle}>Meal Structure</Text>
               
               <View style={styles.configOption}>
@@ -659,12 +674,14 @@ export default function RecommendedMenusScreen() {
               
               <TouchableOpacity
                 style={[styles.modalActionButton, styles.primaryButton]}
-                onPress={() => {
-                  setShowConfigModal(false);
-                  Alert.alert("Success", "Meal plan updated successfully!");
-                }}
+                onPress={createAIMealPlan}
+                disabled={isCreatingPlan}
               >
-                <Text style={[styles.modalActionText, styles.primaryButtonText]}>Save</Text>
+                {isCreatingPlan ? (
+                  <ActivityIndicator color="white" size="small" />
+                ) : (
+                  <Text style={[styles.modalActionText, styles.primaryButtonText]}>Create AI Plan</Text>
+                )}
               </TouchableOpacity>
             </View>
           </View>
@@ -1005,8 +1022,14 @@ const styles = StyleSheet.create({
   configSectionTitle: {
     fontSize: 18,
     fontWeight: "600",
-    marginBottom: 20,
+    marginBottom: 10,
     color: "#333",
+  },
+  configDescription: {
+    fontSize: 14,
+    color: "#666",
+    marginBottom: 20,
+    lineHeight: 20,
   },
   configOption: {
     marginBottom: 25,

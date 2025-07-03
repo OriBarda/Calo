@@ -21,6 +21,56 @@ export interface MealAnalysisResult {
   healthNotes?: string;
 }
 
+export interface MealPlanRequest {
+  age: number;
+  weight_kg: number;
+  height_cm: number;
+  target_calories_daily: number;
+  target_protein_daily: number;
+  target_carbs_daily: number;
+  target_fats_daily: number;
+  meals_per_day: number;
+  snacks_per_day: number;
+  rotation_frequency_days: number;
+  include_leftovers: boolean;
+  fixed_meal_times: boolean;
+  dietary_preferences: string[];
+  excluded_ingredients: string[];
+  allergies: any[];
+  physical_activity_level: string;
+  sport_frequency: string;
+  main_goal: string;
+  dietary_preferences_questionnaire: any[];
+  avoided_foods: any[];
+  meal_texture_preference?: string;
+  cooking_skill_level: string;
+  available_cooking_time: string;
+  kitchen_equipment: string[];
+}
+
+export interface ReplacementMealRequest {
+  current_meal: {
+    name: string;
+    meal_timing: string;
+    dietary_category: string;
+    calories?: number;
+    protein_g?: number;
+    carbs_g?: number;
+    fats_g?: number;
+  };
+  user_preferences: {
+    dietary_preferences: string[];
+    excluded_ingredients: string[];
+    allergies: any[];
+    preferred_dietary_category?: string;
+    max_prep_time?: number;
+  };
+  nutrition_targets: {
+    target_calories: number;
+    target_protein: number;
+  };
+}
+
 export class OpenAIService {
   static async analyzeMealImage(
     imageBase64: string,
@@ -253,6 +303,229 @@ Language for response: ${language}`;
       console.error("💥 OpenAI update error:", error);
       // Return original analysis if update fails
       return originalAnalysis;
+    }
+  }
+
+  static async generateMealPlan(userProfile: MealPlanRequest): Promise<any> {
+    try {
+      console.log("🤖 Generating AI meal plan...");
+
+      const systemPrompt = `You are a professional nutritionist and meal planning expert. Create a personalized 7-day meal plan based on the user's profile, preferences, and goals.
+
+CRITICAL REQUIREMENTS:
+1. Create exactly 7 days of meals (Sunday through Saturday)
+2. Each day should have the specified number of meals and snacks
+3. All meals must meet the user's dietary restrictions and preferences
+4. Avoid all excluded ingredients and allergens
+5. Balance nutrition across the week to meet daily targets
+6. Consider cooking skill level and available time
+7. Provide detailed recipes with ingredients and instructions
+8. Include realistic prep times and difficulty levels
+9. Suggest appropriate portion sizes
+10. Ensure variety across the week
+
+USER PROFILE:
+${JSON.stringify(userProfile, null, 2)}
+
+Respond with a JSON object containing:
+{
+  "weekly_plan": [
+    {
+      "day": "Sunday",
+      "day_index": 0,
+      "meals": [
+        {
+          "name": "Meal name",
+          "description": "Brief description",
+          "meal_timing": "BREAKFAST|LUNCH|DINNER|MORNING_SNACK|AFTERNOON_SNACK",
+          "dietary_category": "VEGETARIAN|VEGAN|KETO|PALEO|MEDITERRANEAN|LOW_CARB|HIGH_PROTEIN|GLUTEN_FREE|DAIRY_FREE|BALANCED",
+          "prep_time_minutes": number,
+          "difficulty_level": 1-3 (1=easy, 2=medium, 3=hard),
+          "calories": number,
+          "protein_g": number,
+          "carbs_g": number,
+          "fats_g": number,
+          "fiber_g": number,
+          "sugar_g": number,
+          "sodium_mg": number,
+          "ingredients": [
+            {
+              "name": "ingredient name",
+              "quantity": number,
+              "unit": "g|ml|tbsp|tsp|cup|piece|slice",
+              "category": "Protein|Produce|Grains|Dairy|Oils|Spices|Condiments|Nuts|Seeds"
+            }
+          ],
+          "instructions": [
+            {
+              "step": 1,
+              "text": "Step description"
+            }
+          ],
+          "allergens": ["gluten", "dairy", "nuts", "eggs", "fish", "shellfish", "soy", "sesame"],
+          "image_url": "https://images.pexels.com/photos/[relevant-food-photo-id]/pexels-photo-[id].jpeg",
+          "portion_multiplier": 1.0,
+          "is_optional": false
+        }
+      ]
+    }
+  ],
+  "weekly_nutrition_summary": {
+    "avg_daily_calories": number,
+    "avg_daily_protein": number,
+    "avg_daily_carbs": number,
+    "avg_daily_fats": number,
+    "goal_adherence_percentage": number
+  },
+  "shopping_tips": [
+    "Practical shopping and meal prep tips"
+  ],
+  "meal_prep_suggestions": [
+    "Suggestions for batch cooking and preparation"
+  ]
+}
+
+IMPORTANT: Use realistic Pexels image URLs for food photos. Make sure all meals are practical, achievable, and aligned with the user's goals and preferences.`;
+
+      const response = await openai.chat.completions.create({
+        model: "gpt-4",
+        messages: [
+          {
+            role: "system",
+            content: systemPrompt,
+          },
+          {
+            role: "user",
+            content: "Please create my personalized 7-day meal plan based on my profile and preferences.",
+          },
+        ],
+        max_tokens: 4000,
+        temperature: 0.3, // Slightly higher for creativity while maintaining consistency
+      });
+
+      const content = response.choices[0]?.message?.content;
+      if (!content) {
+        throw new Error("No response from OpenAI");
+      }
+
+      console.log("🤖 OpenAI meal plan response received");
+
+      // Parse JSON response
+      try {
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
+        const jsonString = jsonMatch ? jsonMatch[0] : content;
+        const mealPlan = JSON.parse(jsonString);
+        
+        console.log("✅ AI meal plan generated successfully");
+        return mealPlan;
+      } catch (parseError) {
+        console.error("💥 Failed to parse meal plan response:", parseError);
+        console.error("📄 Raw content:", content);
+        throw new Error("Failed to parse AI meal plan response");
+      }
+    } catch (error) {
+      console.error("💥 OpenAI meal plan generation error:", error);
+      throw error;
+    }
+  }
+
+  static async generateReplacementMeal(request: ReplacementMealRequest): Promise<any> {
+    try {
+      console.log("🔄 Generating AI replacement meal...");
+
+      const systemPrompt = `You are a professional nutritionist. Generate a replacement meal that is similar to the current meal but meets the user's specific preferences and requirements.
+
+CURRENT MEAL TO REPLACE:
+${JSON.stringify(request.current_meal, null, 2)}
+
+USER PREFERENCES:
+${JSON.stringify(request.user_preferences, null, 2)}
+
+NUTRITION TARGETS:
+${JSON.stringify(request.nutrition_targets, null, 2)}
+
+REQUIREMENTS:
+1. Keep the same meal timing as the original
+2. Maintain similar calorie and protein content (±20%)
+3. Respect all dietary preferences and restrictions
+4. Avoid all excluded ingredients and allergens
+5. Consider the preferred dietary category if specified
+6. Respect maximum prep time if specified
+7. Provide a complete recipe with ingredients and instructions
+
+Respond with a JSON object containing:
+{
+  "name": "New meal name",
+  "description": "Brief description",
+  "meal_timing": "same as original",
+  "dietary_category": "appropriate category",
+  "prep_time_minutes": number,
+  "difficulty_level": 1-3,
+  "calories": number,
+  "protein_g": number,
+  "carbs_g": number,
+  "fats_g": number,
+  "fiber_g": number,
+  "sugar_g": number,
+  "sodium_mg": number,
+  "ingredients": [
+    {
+      "name": "ingredient name",
+      "quantity": number,
+      "unit": "g|ml|tbsp|tsp|cup|piece|slice",
+      "category": "Protein|Produce|Grains|Dairy|Oils|Spices|Condiments|Nuts|Seeds"
+    }
+  ],
+  "instructions": [
+    {
+      "step": 1,
+      "text": "Step description"
+    }
+  ],
+  "allergens": ["list of allergens"],
+  "image_url": "https://images.pexels.com/photos/[relevant-food-photo-id]/pexels-photo-[id].jpeg",
+  "replacement_reason": "Brief explanation of why this is a good replacement"
+}`;
+
+      const response = await openai.chat.completions.create({
+        model: "gpt-4",
+        messages: [
+          {
+            role: "system",
+            content: systemPrompt,
+          },
+          {
+            role: "user",
+            content: "Please generate a suitable replacement meal based on my preferences and requirements.",
+          },
+        ],
+        max_tokens: 1500,
+        temperature: 0.4,
+      });
+
+      const content = response.choices[0]?.message?.content;
+      if (!content) {
+        throw new Error("No response from OpenAI");
+      }
+
+      console.log("🤖 OpenAI replacement meal response received");
+
+      // Parse JSON response
+      try {
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
+        const jsonString = jsonMatch ? jsonMatch[0] : content;
+        const replacementMeal = JSON.parse(jsonString);
+        
+        console.log("✅ AI replacement meal generated successfully");
+        return replacementMeal;
+      } catch (parseError) {
+        console.error("💥 Failed to parse replacement meal response:", parseError);
+        console.error("📄 Raw content:", content);
+        throw new Error("Failed to parse AI replacement meal response");
+      }
+    } catch (error) {
+      console.error("💥 OpenAI replacement meal generation error:", error);
+      throw error;
     }
   }
 }
